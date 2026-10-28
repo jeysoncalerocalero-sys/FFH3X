@@ -1,14 +1,13 @@
 package com.ffh4x.app
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
@@ -20,7 +19,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
 private val VERDE = Color.parseColor("#00FF66")
@@ -30,10 +32,23 @@ private val GRIS = Color.parseColor("#AAAAAA")
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var tvOverlay: TextView
-    private lateinit var tvArchivos: TextView
+    private lateinit var tvCarpeta: TextView
     private lateinit var tvResultado: TextView
-    private lateinit var contenedor: LinearLayout
+
+    private val elegir = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            prefs().edit().putString("carpeta", uri.toString()).apply()
+            mostrar("Carpeta guardada")
+            refrescar()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,12 +62,10 @@ class MainActivity : AppCompatActivity() {
         raiz.addView(texto("FFH4X", 30f, VERDE))
         raiz.addView(texto("inyector propio", 14f, VERDE_SUAVE))
 
-        tvOverlay = texto("", 13f, Color.WHITE)
-        tvArchivos = texto("", 13f, Color.WHITE)
+        tvCarpeta = texto("", 13f, Color.WHITE)
         tvResultado = texto("", 13f, VERDE)
 
         raiz.addView(hueco())
-        raiz.addView(tvOverlay)
         raiz.addView(boton("1. Dar permiso de menu flotante") {
             if (!Settings.canDrawOverlays(this)) {
                 startActivity(
@@ -68,31 +81,24 @@ class MainActivity : AppCompatActivity() {
         })
 
         raiz.addView(hueco())
-        raiz.addView(tvArchivos)
-        raiz.addView(boton("2. Dar acceso a archivos") {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                !Environment.isExternalStorageManager()
-            ) {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                )
-            } else {
-                mostrar("Ya tienes acceso a los archivos")
-            }
+        raiz.addView(tvCarpeta)
+        raiz.addView(boton("2. Elegir la carpeta del juego") { elegir.launch(null) })
+
+        raiz.addView(hueco())
+        raiz.addView(boton("3. Respaldar el original") {
+            tarea { FileApplier.backup(this) }
+        })
+        raiz.addView(boton("Restaurar el original") {
+            tarea { FileApplier.restaurar(this) }
+        })
+        raiz.addView(boton("Diagnostico") {
+            AlertDialog.Builder(this)
+                .setTitle("Diagnostico")
+                .setMessage(FileApplier.diagnostico(this))
+                .setPositiveButton("OK", null)
+                .show()
         })
 
-        raiz.addView(hueco())
-        raiz.addView(boton("3. Respaldar el original") { mostrar(FileApplier.backup()) })
-        raiz.addView(boton("Restaurar el original") { mostrar(FileApplier.restaurar()) })
-
-        raiz.addView(hueco())
-        raiz.addView(texto("Perfiles (fase 2)", 13f, VERDE_SUAVE))
-
-        contenedor = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        raiz.addView(contenedor)
         raiz.addView(hueco())
         raiz.addView(tvResultado)
 
@@ -101,27 +107,30 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        tvOverlay.text =
-            if (Settings.canDrawOverlays(this)) "Menu flotante: CONCEDIDO"
-            else "Menu flotante: falta permiso"
-        tvArchivos.text =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                Environment.isExternalStorageManager()
-            ) "Archivos: CONCEDIDO"
-            else "Archivos: falta permiso"
-        refrescarPerfiles()
+        refrescar()
     }
 
-    private fun refrescarPerfiles() {
-        contenedor.removeAllViews()
-        for (p in FileApplier.perfiles()) {
-            contenedor.addView(boton(p) { mostrar(FileApplier.aplicarPerfil(p)) })
-        }
+    private fun refrescar() {
+        val tiene = prefs().getString("carpeta", null) != null
+        val flotante = if (Settings.canDrawOverlays(this)) "CONCEDIDO" else "falta"
+        tvCarpeta.text =
+            "Menu flotante: $flotante\nCarpeta del juego: " +
+            (if (tiene) "ELEGIDA" else "no elegida")
+    }
+
+    private fun prefs() = getSharedPreferences("ffh4x", Context.MODE_PRIVATE)
+
+    private fun tarea(accion: () -> String) {
+        Toast.makeText(this, "Trabajando...", Toast.LENGTH_SHORT).show()
+        Thread {
+            val r = runCatching { accion() }.getOrElse { "Error: ${it.message}" }
+            runOnUiThread { mostrar(r) }
+        }.start()
     }
 
     private fun mostrar(m: String) {
         tvResultado.text = m
-        Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, m, Toast.LENGTH_LONG).show()
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -149,56 +158,86 @@ class MainActivity : AppCompatActivity() {
 
 object FileApplier {
 
-    private const val RUTA_JUEGO =
-        "Android/data/com.dts.freefireth/files/contentcache/Compulsory/android/gameassetbundles/config"
+    private val CAMINO =
+        listOf("contentcache", "Compulsory", "android", "gameassetbundles", "config")
 
-    private const val NUESTRA = "FFH4X"
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("ffh4x", Context.MODE_PRIVATE)
 
-    private fun externa(): File = Environment.getExternalStorageDirectory()
-    private fun dirJuego(): File = File(externa(), RUTA_JUEGO)
-    private fun dirNuestra(): File = File(externa(), NUESTRA)
-    private fun dirBackup(): File = File(dirNuestra(), "backup_original")
-    private fun dirPerfiles(): File = File(dirNuestra(), "perfiles")
-
-    fun perfiles(): List<String> {
-        val f = dirPerfiles()
-        if (!f.exists()) f.mkdirs()
-        val lista = f.listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
-        return if (lista.isEmpty()) listOf("original") else lista
+    private fun raizElegida(ctx: Context): DocumentFile? {
+        val s = prefs(ctx).getString("carpeta", null) ?: return null
+        return DocumentFile.fromTreeUri(ctx, Uri.parse(s))
     }
 
-    fun backup(): String {
-        val origen = dirJuego()
-        if (!origen.exists())
-            return "No encontre la carpeta del juego. Abre Free Fire una vez."
-        val destino = dirBackup()
+    fun carpeta(ctx: Context): DocumentFile? {
+        val raiz = raizElegida(ctx) ?: return null
+        if (raiz.name == "config") return raiz
+        var d: DocumentFile = raiz
+        for (p in CAMINO) {
+            val h = d.findFile(p) ?: continue
+            d = h
+        }
+        return d
+    }
+
+    fun backup(ctx: Context): String {
+        val carpeta = carpeta(ctx) ?: return "Primero elige la carpeta del juego"
+        val destino = File(ctx.filesDir, "backup")
         destino.deleteRecursively()
         destino.mkdirs()
-        copiar(origen, destino)
-        return "Respaldo listo en /FFH4X/backup_original"
-    }
-
-    fun restaurar(): String {
-        val origen = dirBackup()
-        if (!origen.exists()) return "Todavia no hiciste respaldo"
-        copiar(origen, dirJuego())
-        return "Original restaurado. Reinicia Free Fire."
-    }
-
-    fun aplicarPerfil(perfil: String): String {
-        val origen = File(dirPerfiles(), perfil)
-        if (!origen.exists() || origen.listFiles().isNullOrEmpty())
-            return "El perfil '$perfil' esta vacio. Mete archivos en /FFH4X/perfiles/$perfil"
-        copiar(origen, dirJuego())
-        return "Perfil '$perfil' aplicado. Reinicia Free Fire."
-    }
-
-    private fun copiar(origen: File, destino: File) {
-        if (!destino.exists()) destino.mkdirs()
-        origen.listFiles()?.forEach { f ->
-            val d = File(destino, f.name)
-            if (f.isDirectory) copiar(f, d) else f.copyTo(d, overwrite = true)
+        var n = 0
+        for (d in carpeta.listFiles()) {
+            val nombre = d.name ?: continue
+            if (d.isDirectory) continue
+            val f = File(destino, nombre)
+            ctx.contentResolver.openInputStream(d.uri)?.use { entrada ->
+                f.outputStream().use { salida -> entrada.copyTo(salida) }
+            }
+            n++
         }
+        return "Respaldo listo: $n archivos"
+    }
+
+    fun restaurar(ctx: Context): String {
+        val carpeta = carpeta(ctx) ?: return "Primero elige la carpeta del juego"
+        val origen = File(ctx.filesDir, "backup")
+        if (!origen.exists() || origen.listFiles().isNullOrEmpty())
+            return "Todavia no hiciste respaldo"
+        var n = 0
+        for (f in origen.listFiles()!!) {
+            val doc = carpeta.findFile(f.name)
+                ?: carpeta.createFile("application/octet-stream", f.name)
+            doc ?: continue
+            ctx.contentResolver.openOutputStream(doc.uri, "wt")?.use { salida ->
+                f.inputStream().use { entrada -> entrada.copyTo(salida) }
+            }
+            n++
+        }
+        return "Restaurado: $n archivos"
+    }
+
+    fun diagnostico(ctx: Context): String {
+        val sb = StringBuilder()
+        val guardada = prefs(ctx).getString("carpeta", null)
+        sb.appendLine("Carpeta elegida: ${if (guardada == null) "NINGUNA" else "SI"}")
+        sb.appendLine(guardada ?: "-")
+        sb.appendLine()
+
+        val c = carpeta(ctx)
+        if (c == null) {
+            sb.appendLine("No se pudo abrir la carpeta")
+        } else {
+            sb.appendLine("Nombre: ${c.name}")
+            sb.appendLine("Puede leer: ${c.canRead()}")
+            sb.appendLine("Puede escribir: ${c.canWrite()}")
+            val hijos = c.listFiles()
+            sb.appendLine("Archivos adentro: ${hijos.size}")
+            hijos.take(40).forEach { sb.appendLine(" - ${it.name}") }
+        }
+
+        val b = File(ctx.filesDir, "backup")
+        sb.appendLine()
+        sb.appendLine("Respaldo guardado: ${b.listFiles()?.size ?: 0} archivos")
+        return sb.toString()
     }
 }
 
@@ -264,19 +303,8 @@ class FloatingMenuService : Service() {
             textSize = 16f
         })
 
-        col.addView(btn("Respaldar original") { aviso(FileApplier.backup()) })
-        col.addView(btn("Restaurar original") { aviso(FileApplier.restaurar()) })
-
-        col.addView(TextView(this).apply {
-            text = "Perfiles"
-            setTextColor(GRIS)
-            textSize = 12f
-        })
-
-        for (p in FileApplier.perfiles()) {
-            col.addView(btn(p) { aviso(FileApplier.aplicarPerfil(p)) })
-        }
-
+        col.addView(btn("Respaldar original") { tarea { FileApplier.backup(this) } })
+        col.addView(btn("Restaurar original") { tarea { FileApplier.restaurar(this) } })
         col.addView(btn("Cerrar menu") { stopSelf() })
 
         val p = WindowManager.LayoutParams(
@@ -294,7 +322,15 @@ class FloatingMenuService : Service() {
         panel = col
     }
 
-    private fun aviso(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+    private fun tarea(accion: () -> String) {
+        aviso("Trabajando...")
+        Thread {
+            val r = runCatching { accion() }.getOrElse { "Error: ${it.message}" }
+            mainExecutor.execute { aviso(r) }
+        }.start()
+    }
+
+    private fun aviso(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
 
     private fun btn(t: String, a: () -> Unit) = Button(this).apply {
         text = t
