@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FFH4X</string>
+
+    <color name="verde_toxico">#00FF66</color>
+    <color name="negro_fondo">#0B0F0C</color>
+    <color name="ic_launcher_background">#0B0F0C</color>
+
+    <style name="Theme.FFH4X" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#00FF66</item>
+        <item name="colorAccent">#00FF66</item>
+        <item name="android:windowBackground">#0B0F0C</item>
+    </style>
+</resources>
